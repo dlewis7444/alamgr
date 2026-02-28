@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.5
+Name=AlaMGR
+Comment=Launch Alacritty terminals for host/project combos
+Exec=alamgr
+Icon=alamgr
+Type=Application
+Terminal=false
+Categories=Utility;TerminalEmulator;
+Keywords=terminal;ssh;tmux;alacritty;session;
+StartupNotify=true
+StartupWMClass=alamgr

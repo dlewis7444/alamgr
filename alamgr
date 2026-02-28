@@ -1,0 +1,218 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+VERSION="1.0.0"
+
+HISTORY_DIR="$HOME/.config/alamgr"
+HISTORY_FILE="$HISTORY_DIR/history.json"
+SSH_CONFIG="$HOME/.ssh/config"
+ENV_FILE="$HISTORY_DIR/env"
+
+# Source user config if present
+# shellcheck source=/dev/null
+[[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
+
+ALAMGR_STRIP_SUFFIX="${ALAMGR_STRIP_SUFFIX:-}"
+ALAMGR_DEV_ROOT="${ALAMGR_DEV_ROOT:-$HOME/dev}"
+dev_root_q=$(printf '%q' "$ALAMGR_DEV_ROOT")
+
+case "${1:-}" in
+    --version) echo "alamgr $VERSION"; exit 0 ;;
+    --help)    echo "Usage: alamgr [--version] [--help]"
+               echo "  GUI launcher for Alacritty+tmux project sessions."
+               exit 0 ;;
+esac
+
+# Ensure history file exists
+mkdir -p "$HISTORY_DIR" && chmod 700 "$HISTORY_DIR"
+[[ -f "$HISTORY_FILE" ]] || echo '[]' > "$HISTORY_FILE"
+
+# Parse SSH config: concrete hosts only, strip ALAMGR_STRIP_SUFFIX, skip bare IPs
+get_ssh_hosts() {
+    [[ ! -f "$SSH_CONFIG" ]] && return
+    awk -v strip_suffix="$ALAMGR_STRIP_SUFFIX" '
+        function emit(hosts, hn,    i, n, arr, h, pos) {
+            n = split(hosts, arr, " ")
+            for (i = 1; i <= n; i++) {
+                h = arr[i]
+                if (h ~ /[*?]/) continue
+                if (h ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/) {
+                    if (hn == "") continue
+                    h = hn
+                }
+                if (strip_suffix != "" && length(h) > length(strip_suffix)) {
+                    pos = length(h) - length(strip_suffix) + 1
+                    if (substr(h, pos) == strip_suffix)
+                        h = substr(h, 1, pos - 1)
+                }
+                print h
+            }
+        }
+        /^[Hh]ost[[:space:]]/ {
+            if (cur != "") emit(cur, hn)
+            cur = $0; sub(/^[Hh]ost[[:space:]]+/, "", cur)
+            hn = ""
+            next
+        }
+        /^[[:space:]]*[Hh]ostname[[:space:]]/ { hn = $2; next }
+        END { if (cur != "") emit(cur, hn) }
+    ' "$SSH_CONFIG" | sort -u
+}
+
+# Update history: add or touch an entry
+update_history() {
+    local host="$1" project="$2"
+    local now
+    now=$(date -Iseconds)
+    local tmp tmpfile
+    if ! tmp=$(jq --arg h "$host" --arg p "$project" --arg t "$now" \
+        '[.[] | select(.host != $h or .project != $p)] + [{"host": $h, "project": $p, "last_used": $t}]' \
+        "$HISTORY_FILE" 2>&1); then
+        zenity --error --text="AlaMGR: history file is unreadable or corrupt.\n\nFile: $HISTORY_FILE\nError: $tmp" 2>/dev/null || true
+        return 1
+    fi
+    tmpfile=$(mktemp -p "$HISTORY_DIR")
+    printf '%s\n' "$tmp" > "$tmpfile"
+    mv "$tmpfile" "$HISTORY_FILE"
+}
+
+# Build zenity list data from history (sorted by project, then host)
+build_list_rows() {
+    jq -r 'sort_by(.project, .host) | .[] | "\(.project)\n\(.host)\n\(.last_used)"' "$HISTORY_FILE"
+}
+
+# --- Main ---
+new_project=false
+
+# Build the row data for zenity
+rows=()
+rows+=("** New host/project **" "*NEW*" "")
+while IFS= read -r line; do
+    rows+=("$line")
+done < <(build_list_rows)
+
+# Show selection dialog
+selection=$(zenity --list \
+    --title="AlaMGR" \
+    --text="Select a host/project or create a new one:" \
+    --column="Project" --column="Host" --column="Last Used" \
+    --width=600 --height=400 \
+    --print-column=ALL --separator="|" \
+    "${rows[@]}") || exit 0
+
+project=$(echo "$selection" | cut -d'|' -f1)
+host=$(echo "$selection" | cut -d'|' -f2)
+
+# If "New" was selected, prompt for host and project
+if [[ "$host" == "*NEW*" ]]; then
+    # Build host list items: "local" first, then ssh hosts, then manual entry option
+    host_list_items=("local")
+    while IFS= read -r h; do
+        [[ -n "$h" ]] && host_list_items+=("$h")
+    done < <(get_ssh_hosts)
+    host_list_items+=("** Enter manually... **")
+
+    host=$(zenity --list \
+        --title="Select Host" \
+        --text="Choose a host or enter manually:" \
+        --column="Host" \
+        --width=600 --height=800 \
+        "${host_list_items[@]}") || exit 0
+
+    if [[ -z "$host" || "$host" == "** Enter manually... **" ]]; then
+        host=$(zenity --entry \
+            --title="Host" \
+            --text="Enter hostname:") || exit 0
+    fi
+
+    # Get list of ALAMGR_DEV_ROOT subdirs on the chosen host
+    if [[ "$host" == "local" ]]; then
+        dev_dirs=$(find "$ALAMGR_DEV_ROOT" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null | sort || true)
+    else
+        # NOTE: remote listing still uses `ls`; filenames with newlines/special chars are a known limitation.
+        _ssh_err=$(mktemp)
+        dev_dirs=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes \
+            "$host" "ls -1 ${dev_root_q} 2>/dev/null | sort" 2>"$_ssh_err" || true)
+        if [[ -z "$dev_dirs" ]] && grep -qi "host key verification failed\|no .* host key is known" "$_ssh_err" 2>/dev/null; then
+            zenity --warning \
+                --title="AlaMGR: Unknown Host Key" \
+                --text="Cannot list projects on '${host}':\nHost key not found in ~/.ssh/known_hosts.\n\nRun 'ssh ${host}' in a terminal to accept the key,\nthen try again. Continuing with an empty project list." \
+                2>/dev/null || true
+        fi
+        rm -f "$_ssh_err"
+    fi
+
+    project_list_items=("** Leave blank (go to ${ALAMGR_DEV_ROOT}) **" "** Type new project name... **")
+    while IFS= read -r d; do
+        [[ -n "$d" ]] && project_list_items+=("$d")
+    done <<< "$dev_dirs"
+
+    project_choice=$(zenity --list \
+        --title="Select Project" \
+        --text="Choose an existing project, type a new name, or leave blank:" \
+        --column="Project" \
+        --width=600 --height=800 \
+        "${project_list_items[@]}") || exit 0
+
+    if [[ "$project_choice" == "** Leave blank (go to ${ALAMGR_DEV_ROOT}) **" ]]; then
+        project=""
+    elif [[ "$project_choice" == "** Type new project name... **" ]]; then
+        project=$(zenity --entry \
+            --title="New Project" \
+            --text="Enter new project name (will create ${ALAMGR_DEV_ROOT}/<name>):") || exit 0
+        new_project=true
+    else
+        project="$project_choice"
+    fi
+
+    if [[ -z "$host" ]]; then
+        zenity --error --text="Host is required."
+        exit 1
+    fi
+fi
+
+# Update history
+update_history "$host" "$project"
+
+# Window title and cd target
+hostshort="${host%"$ALAMGR_STRIP_SUFFIX"}"
+project_q=$(printf '%q' "$project")
+if [[ -z "$project" ]]; then
+    title="(${hostshort})"
+    cd_cmd="cd ${dev_root_q}"
+elif [[ "$new_project" == "true" ]]; then
+    title="${project}(${hostshort})"
+    cd_cmd="mkdir -p ${dev_root_q}/${project_q} && cd ${dev_root_q}/${project_q}"
+else
+    title="${project}(${hostshort})"
+    cd_cmd="cd ${dev_root_q}/${project_q} 2>/dev/null"
+fi
+
+# Build tmux session name (host-project), sanitize for tmux
+if [[ -z "$project" ]]; then
+    session="${host}-noproject"
+else
+    session="${host}-${project}"
+fi
+session="${session//[^a-zA-Z0-9_-]/-}"
+
+# Launch alacritty with the appropriate command
+if [[ "$host" == "local" ]]; then
+    alacritty --class alamgr --title "$title" -o 'window.startup_mode="Maximized"' -e bash -c "
+        ${cd_cmd}
+        tmux has-session -t '${session}' 2>/dev/null \
+            && tmux attach-session -t '${session}' \
+            || tmux new-session -s '${session}' \\; split-window -h \\; select-pane -t 0
+        exec bash
+    " &
+else
+    alacritty --class alamgr --title "$title" -o 'window.startup_mode="Maximized"' -e ssh -t "$host" "
+        ${cd_cmd}
+        tmux has-session -t '${session}' 2>/dev/null \
+            && tmux attach-session -t '${session}' \
+            || tmux new-session -s '${session}' \\; split-window -h \\; select-pane -t 0
+        exec bash
+    " &
+fi
+
+disown
