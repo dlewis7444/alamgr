@@ -8,7 +8,7 @@ url="https://github.com/dlewis7444/alamgr"
 license=('MIT')
 depends=('bash' 'alacritty' 'tmux' 'zenity' 'jq')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/dlewis7444/$pkgname/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('d54f4d86ec429e3e7b218153a19827d8a4127bcbd1b2dab83cf9f932929d20ba')
+sha256sums=('8e7490d30f458f55803a9bc4db433c1e948406c9f61ed479267b4cce80c9a86b')
 
 package() {
     cd "$pkgname-$pkgver" || return 1
