@@ -59,6 +59,30 @@ get_ssh_hosts() {
     ' "$SSH_CONFIG" | sort -u
 }
 
+# Return 0 if needle appears in ~/.ssh/config as a Host alias or HostName value
+ssh_config_has_host() {
+    local needle="$1"
+    [[ ! -f "$SSH_CONFIG" ]] && return 1
+    awk -v n="$needle" '
+        /^[Hh]ost[[:space:]]/ {
+            for (i = 2; i <= NF; i++)
+                if ($i == n) { found = 1; exit }
+        }
+        /^[[:space:]]*[Hh]ostname[[:space:]]/ {
+            if ($2 == n) { found = 1; exit }
+        }
+        END { exit (found ? 0 : 1) }
+    ' "$SSH_CONFIG"
+}
+
+# Append a minimal Host entry to ~/.ssh/config
+ssh_config_add_host() {
+    local h="$1"
+    mkdir -p "${SSH_CONFIG%/*}" && chmod 700 "${SSH_CONFIG%/*}"
+    [[ -f "$SSH_CONFIG" ]] || install -m600 /dev/null "$SSH_CONFIG"
+    printf '\nHost %s\n    HostName %s\n' "$h" "$h" >> "$SSH_CONFIG"
+}
+
 # Update history: add or touch an entry
 update_history() {
     local host="$1" project="$2"
@@ -123,6 +147,18 @@ if [[ "$host" == "*NEW*" ]]; then
         host=$(zenity --entry \
             --title="Host" \
             --text="Enter hostname:") || exit 0
+
+        if [[ -n "$host" ]]; then
+            if ssh_config_has_host "$host"; then
+                zenity --question \
+                    --title="AlaMGR: Host Already in SSH Config" \
+                    --text="'${host}' already exists in ~/.ssh/config.\n\nContinue anyway?" \
+                    --ok-label="Continue" --cancel-label="Abort" \
+                    2>/dev/null || exit 0
+            else
+                ssh_config_add_host "$host"
+            fi
+        fi
     fi
 
     # Get list of ALAMGR_DEV_ROOT subdirs on the chosen host
