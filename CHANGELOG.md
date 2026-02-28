@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-02-27
+
+### Added
+- Manually-entered hosts are automatically added to `~/.ssh/config` (minimal `Host`/`HostName` entry); creates the file if absent
+- Abort/continue dialog when a manually-entered host already exists in `~/.ssh/config` (checks both `Host` aliases and `HostName` values)
+- `~/.config/alamgr/env` config file sourced at startup; `install.sh` seeds it from `env.example` on first install
+- `exec bash` after tmux in both local and remote launch blocks — exiting tmux drops to a shell instead of closing the window
+
+### Fixed
+- Typing a hostname into the zenity host-list filter (instead of selecting a row) returned empty string, causing a spurious "Host is required" error; now falls through to the manual entry dialog
+- `awk sub()` treated `ALAMGR_STRIP_SUFFIX` as a regex (dots matched any character); replaced with literal `substr()`/`index()` comparison
+- CHANGELOG release link pointed to wrong GitHub username
+
 ## [1.0.0] - 2026-02-27
 
 ### Added
@@ -39,4 +52,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+[1.1.0]: https://github.com/dlewis7444/alamgr/releases/tag/v1.1.0
 [1.0.0]: https://github.com/dlewis7444/alamgr/releases/tag/v1.0.0
