@@ -64,6 +64,7 @@ ALAMGR_STRIP_SUFFIX=".mydom.local"
 |---|---|---|
 | `ALAMGR_DEV_ROOT` | `~/dev` | Root directory where projects are listed and created on each host. |
 | `ALAMGR_STRIP_SUFFIX` | *(empty)* | Hostname suffix to strip from SSH config entries and window titles. |
+| `ALAMGR_REMOTE_TMUX_OPTS` | mouse + clipboard settings | Newline-separated tmux commands applied when creating a new remote session. Set to empty string to disable. |
 
 Environment variables still work and take precedence over the env file.
 

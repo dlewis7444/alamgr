@@ -16,6 +16,15 @@ ALAMGR_STRIP_SUFFIX="${ALAMGR_STRIP_SUFFIX:-}"
 ALAMGR_DEV_ROOT="${ALAMGR_DEV_ROOT:-$HOME/dev}"
 dev_root_q=$(printf '%q' "$ALAMGR_DEV_ROOT")
 
+# Default remote tmux settings applied when creating a new session.
+# Override or clear in ~/.config/alamgr/env (one tmux command per line).
+if [[ -z ${ALAMGR_REMOTE_TMUX_OPTS+x} ]]; then
+    ALAMGR_REMOTE_TMUX_OPTS="set -g mouse on
+set-option -g set-clipboard external
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'tmux save-buffer -'
+bind-key -T copy-mode     MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel 'tmux save-buffer -'"
+fi
+
 case "${1:-}" in
     --version) echo "alamgr $VERSION"; exit 0 ;;
     --help)    echo "Usage: alamgr [--version] [--help]"
@@ -232,6 +241,14 @@ else
 fi
 session="${session//[^a-zA-Z0-9_-]/-}"
 
+# Build tmux option chain for new remote sessions (\; is tmux's command separator)
+remote_tmux_opts=""
+if [[ -n "$ALAMGR_REMOTE_TMUX_OPTS" ]]; then
+    while IFS= read -r _opt; do
+        [[ -n "$_opt" ]] && remote_tmux_opts+=" \\; $_opt"
+    done <<< "$ALAMGR_REMOTE_TMUX_OPTS"
+fi
+
 # Launch alacritty with the appropriate command
 if [[ "$host" == "local" ]]; then
     alacritty --class alamgr --title "$title" -o 'window.startup_mode="Maximized"' -e bash -c "
@@ -246,7 +263,7 @@ else
         ${cd_cmd}
         tmux has-session -t '${session}' 2>/dev/null \
             && tmux attach-session -t '${session}' \
-            || tmux new-session -s '${session}' \\; split-window -h \\; select-pane -t 0
+            || tmux new-session -s '${session}'${remote_tmux_opts} \\; split-window -h \\; select-pane -t 0
         exec bash
     " &
 fi
