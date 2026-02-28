@@ -1,6 +1,6 @@
 # Maintainer: David Lewis <dlewis7444@github>
 pkgname=alamgr
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="Bash GUI launcher for Alacritty project sessions via zenity, tmux, and SSH"
 arch=('any')
