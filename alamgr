@@ -15,6 +15,12 @@ ENV_FILE="$HISTORY_DIR/env"
 ALAMGR_STRIP_SUFFIX="${ALAMGR_STRIP_SUFFIX:-}"
 ALAMGR_DEV_ROOT="${ALAMGR_DEV_ROOT:-$HOME/dev}"
 dev_root_q=$(printf '%q' "$ALAMGR_DEV_ROOT")
+# For remote SSH commands, replace local $HOME prefix with ~ so the remote shell expands it
+if [[ "$ALAMGR_DEV_ROOT" == "$HOME"* ]]; then
+    remote_dev_root_q="~$(printf '%q' "${ALAMGR_DEV_ROOT#"$HOME"}")"
+else
+    remote_dev_root_q="$dev_root_q"
+fi
 
 # Default remote tmux settings applied when creating a new session.
 # Override or clear in ~/.config/alamgr/env (one tmux command per line).
@@ -32,9 +38,38 @@ case "${1:-}" in
                exit 0 ;;
 esac
 
+# Normalize raw host input to canonical user@host form; "local" is left unchanged
+normalize_host() {
+    local h="$1"
+    if [[ "$h" == "local" || "$h" == *@* ]]; then
+        echo "$h"
+    else
+        echo "${USER}@${h}"
+    fi
+}
+
+# Extract bare hostname (strips user@ prefix)
+host_part() {
+    echo "${1#*@}"
+}
+
+# Migrate history entries lacking @ (except "local") to $USER@host
+migrate_history() {
+    local tmp tmpfile
+    tmp=$(jq --arg user "$USER" '
+        map(if .host != "local" and (.host | contains("@") | not)
+            then .host = ($user + "@" + .host)
+            else . end)
+    ' "$HISTORY_FILE")
+    tmpfile=$(mktemp -p "$HISTORY_DIR")
+    printf '%s\n' "$tmp" > "$tmpfile"
+    mv "$tmpfile" "$HISTORY_FILE"
+}
+
 # Ensure history file exists
 mkdir -p "$HISTORY_DIR" && chmod 700 "$HISTORY_DIR"
 [[ -f "$HISTORY_FILE" ]] || echo '[]' > "$HISTORY_FILE"
+migrate_history
 
 # Parse SSH config: concrete hosts only, strip ALAMGR_STRIP_SUFFIX, skip bare IPs
 get_ssh_hosts() {
@@ -128,8 +163,8 @@ done < <(build_list_rows)
 selection=$(zenity --list \
     --title="AlaMGR" \
     --text="Select a host/project or create a new one:" \
-    --column="Project" --column="Host" --column="Last Used" \
-    --width=600 --height=400 \
+    --column="Project" --column="User@Host" --column="Last Used" \
+    --width=700 --height=400 \
     --print-column=ALL --separator="|" \
     "${rows[@]}") || exit 0
 
@@ -155,19 +190,23 @@ if [[ "$host" == "*NEW*" ]]; then
     if [[ -z "$host" || "$host" == "** Enter manually... **" ]]; then
         host=$(zenity --entry \
             --title="Host" \
-            --text="Enter hostname:") || exit 0
+            --text="Enter host (hostname or user@hostname):") || exit 0
+        host=$(normalize_host "$host")
 
         if [[ -n "$host" ]]; then
-            if ssh_config_has_host "$host"; then
+            _hostonly=$(host_part "$host")
+            if ssh_config_has_host "$_hostonly"; then
                 zenity --question \
                     --title="AlaMGR: Host Already in SSH Config" \
-                    --text="'${host}' already exists in ~/.ssh/config.\n\nContinue anyway?" \
+                    --text="'${_hostonly}' already exists in ~/.ssh/config.\n\nContinue anyway?" \
                     --ok-label="Continue" --cancel-label="Abort" \
                     2>/dev/null || exit 0
             else
-                ssh_config_add_host "$host"
+                ssh_config_add_host "$_hostonly"
             fi
         fi
+    else
+        host=$(normalize_host "$host")
     fi
 
     # Get list of ALAMGR_DEV_ROOT subdirs on the chosen host
@@ -177,7 +216,7 @@ if [[ "$host" == "*NEW*" ]]; then
         # NOTE: remote listing still uses `ls`; filenames with newlines/special chars are a known limitation.
         _ssh_err=$(mktemp)
         dev_dirs=$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes \
-            "$host" "ls -1 ${dev_root_q} 2>/dev/null | sort" 2>"$_ssh_err" || true)
+            "$host" "ls -1 ${remote_dev_root_q} 2>/dev/null | sort" 2>"$_ssh_err" || true)
         if [[ -z "$dev_dirs" ]] && grep -qi "host key verification failed\|no .* host key is known" "$_ssh_err" 2>/dev/null; then
             zenity --warning \
                 --title="AlaMGR: Unknown Host Key" \
@@ -222,15 +261,16 @@ update_history "$host" "$project"
 # Window title and cd target
 hostshort="${host%"$ALAMGR_STRIP_SUFFIX"}"
 project_q=$(printf '%q' "$project")
+_root_q=$([[ "$host" == "local" ]] && echo "$dev_root_q" || echo "$remote_dev_root_q")
 if [[ -z "$project" ]]; then
     title="(${hostshort})"
-    cd_cmd="cd ${dev_root_q}"
+    cd_cmd="cd ${_root_q}"
 elif [[ "$new_project" == "true" ]]; then
     title="${project}(${hostshort})"
-    cd_cmd="mkdir -p ${dev_root_q}/${project_q} && cd ${dev_root_q}/${project_q}"
+    cd_cmd="mkdir -p ${_root_q}/${project_q} && cd ${_root_q}/${project_q}"
 else
     title="${project}(${hostshort})"
-    cd_cmd="cd ${dev_root_q}/${project_q} 2>/dev/null"
+    cd_cmd="cd ${_root_q}/${project_q} 2>/dev/null"
 fi
 
 # Build tmux session name (host-project), sanitize for tmux
